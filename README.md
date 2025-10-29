@@ -157,7 +157,7 @@ Operational logs and stderr copies are appended to `/tmp/mcp_server.log`. Tool s
 Template minimal tool:
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuom pipefail
 case "$1" in
   list)
     jq -cn '{name:"mytool",description:"Does X",inputSchema:{type:"object",properties:{},required:[]}}'
