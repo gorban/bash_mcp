@@ -49,42 +49,46 @@ tool_list() {
 
 log() { echo >&2 -e "[tools/test.sh] $*"; }
 
+text_response() {
+  local text="$1" is_error="${2-false}" # anything other than omitting or "false" is isError
+  jq -cn --arg isError "$is_error" \
+    --arg text "$text" '{
+      content: [
+        {
+          type: "text",
+          text: $text | tostring
+        }
+      ],
+      isError: $isError | test("false") | not
+    }'
+}
+
 tool_echo() {
-  local json="$1" text
+  local json="$1"
+  local text
   text="$(jq -r '.text' <<< "$json")"
   if [[ -z "$text" ]]; then
     echo "Missing 'text' parameter"
     return 1
   fi
-  jq -c '{
-      content: [
-        {
-          type: "text",
-          text: .text
-        }
-      ],
-      isError: false
-    }' <<< "$text"
+
+  text_response "$text"
 }
 
 tool_add() {
   local json="$1" a b sum
+  set +u
   a="$(jq -r '.a' <<< "$json")"
   b="$(jq -r '.b' <<< "$json")"
   if [[ -z "$a" || -z "$b" ]]; then
+    set -u
     echo "Missing 'a' and/or 'b' parameters"
     return 1
   fi
+  set -u
+
   sum=$((a + b))
-  jq -cn --argjson sum "$sum" '{
-      content: [
-        {
-          type: "text",
-          text: $sum | tostring
-        }
-      ],
-      isError: false
-    }'
+  text_response "$sum"
 }
 
 main() {
@@ -102,7 +106,7 @@ main() {
     test_add)
       tool_add "${1-}" || return 1
       ;;
-    
+
     # Optional additional instructions (helps the LLM use the tools correctly)
     instructions)
       tool_instructions

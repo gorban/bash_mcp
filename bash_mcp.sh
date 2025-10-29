@@ -303,9 +303,17 @@ cache_tool_files() {
       if parse_capture "$instr_res"; then
         if [[ "$PARSE_EXIT_CODE" == "0" ]]; then
           if [[ -n "$PARSE_STDOUT" ]]; then
-            # Trim trailing whitespace/newlines
-            local trimmed
-            trimmed="$(printf '%s' "$PARSE_STDOUT" | sed 's/[[:space:]]*$//')"
+            # Trim leading and trailing whitespace/newlines
+            local trimmed="$PARSE_STDOUT"
+            # Remove leading whitespace
+            while [[ "$trimmed" =~ ^[[:space:]] ]]; do
+              trimmed="${trimmed#[[:space:]]}"
+            done
+            # Remove trailing whitespace
+            while [[ "$trimmed" =~ [[:space:]]$ ]]; do
+              trimmed="${trimmed%[[:space:]]}"
+            done
+
             [[ -n "$trimmed" ]] && TOOL_EXTRA_INSTRUCTIONS+=("$trimmed")
           fi
           [[ -n "$PARSE_STDERR" ]] && log 1 "Instructions stderr $f: $PARSE_STDERR"
