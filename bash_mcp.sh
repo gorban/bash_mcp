@@ -17,6 +17,7 @@ set -Eeuom pipefail
 LOG_FILE="/tmp/mcp_server.log"
 TOOLS_DIR="$(dirname "$0")/tools"
 JQ_LAST_ERROR=""
+TOOL_EXTRA_INSTRUCTIONS=()  # aggregated plain-text instructions from tools
 
 # Mapping structures (avoid associative arrays for macOS default Bash 3.2)
 TOOL_NAME_LIST=()          # tool names in discovery order
@@ -32,17 +33,34 @@ PARSE_STDERR=""
 PARSE_COMBINED=""
 
 server_config_json() {
-  jq -cn '{
+  # Base instructions plus any extra tool-provided instructions (plain text).
+  local base="This server provides our team's custom tools." joined="" nl=$'\n\n'
+  if (( ${#TOOL_EXTRA_INSTRUCTIONS[@]} > 0 )); then
+    local inst
+    for inst in "${TOOL_EXTRA_INSTRUCTIONS[@]}"; do
+      [[ -z "$inst" ]] && continue
+      if [[ -n "$joined" ]]; then
+        joined+="$nl"
+      fi
+      joined+="$inst"
+    done
+  fi
+
+  local final="$base"
+  if [[ -n "$joined" ]]; then
+    final+="${nl}${joined}"
+  fi
+  jq -cn --arg instructions "$final" '{
     protocolVersion: "2025-06-18",
     serverInfo: {
-      name: "Team MCP Server", version: "0.0.1"
+      name: "Team MCP Server", version: "0.0.2"
     },
     capabilities: {
       tools: {
         listChanged: true
       }
     },
-    instructions: "This server provides our team'"'"'s custom tools."
+    instructions: $instructions
   }'
 }
 
@@ -116,7 +134,7 @@ jq_eval() {
 
 # Add a noop function to reference globals (helps some static analyzers recognize usage)
 _touch_globals() {
-  : "${TOOLS_DIR-}" "${TOOL_NAME_LIST[*]-}" "${TOOL_FILE_MAPPING[*]-}" "${TOOL_AGGREGATED_JSON-}" "${TOOL_DUPLICATES[*]-}" "${TOOL_LIST_ERRORS[*]-}"
+  : "${TOOLS_DIR-}" "${TOOL_NAME_LIST[*]-}" "${TOOL_FILE_MAPPING[*]-}" "${TOOL_AGGREGATED_JSON-}" "${TOOL_DUPLICATES[*]-}" "${TOOL_LIST_ERRORS[*]-}" "${TOOL_EXTRA_INSTRUCTIONS[*]-}"
 }
 
 # Add tool definition to mapping (handles duplicates)
@@ -278,6 +296,25 @@ cache_tool_files() {
       done < <(jq -c '.[]' <<< "$defs_array")
 
       [[ -n "$PARSE_STDERR" ]] && log 1 "List stderr $f: $PARSE_STDERR"
+
+      # Attempt to retrieve optional extra instructions (plain text)
+      local instr_res
+      instr_res="$(run_and_capture "$f" instructions)" || true
+      if parse_capture "$instr_res"; then
+        if [[ "$PARSE_EXIT_CODE" == "0" ]]; then
+          if [[ -n "$PARSE_STDOUT" ]]; then
+            # Trim trailing whitespace/newlines
+            local trimmed
+            trimmed="$(printf '%s' "$PARSE_STDOUT" | sed 's/[[:space:]]*$//')"
+            [[ -n "$trimmed" ]] && TOOL_EXTRA_INSTRUCTIONS+=("$trimmed")
+          fi
+          [[ -n "$PARSE_STDERR" ]] && log 1 "Instructions stderr $f: $PARSE_STDERR"
+        else
+          log 2 "Instructions command failure file=$f exit_code=$PARSE_EXIT_CODE combined=$PARSE_COMBINED"
+        fi
+      else
+        log 2 "Instructions parse error file=$f raw=$instr_res"
+      fi
     done < <(find "$TOOLS_DIR" -maxdepth 1 -type f 2>/dev/null)
   fi
   log 1 "Cache complete files=$file_count tools=${#TOOL_NAME_LIST[@]} duplicates=${#TOOL_DUPLICATES[@]} errors=${#TOOL_LIST_ERRORS[@]}"

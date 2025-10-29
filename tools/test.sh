@@ -3,17 +3,24 @@
 set -Eeuom pipefail
 
 # Usage:
-#   ./test.sh list                      # prints tool definitions (one JSON object per line)
+#   ./test.sh list                    # prints tool definitions (one JSON object per line)
+#   ./test.sh instructions            # prints extra usage instructions for the parent MCP server
 #   ./test.sh echo '{"text":"hi"}'    # runs echo tool
 #   ./test.sh add '{"a":1,"b":2}'     # runs add tool
 
-log() { echo >&2 -e "[tools/test.sh] $*"; }
+tool_instructions() {
+  cat <<'EOF'
+Extra usage notes for test tools:
+- test_echo: returns the text verbatim.
+- test_add: integer addition only (bash arithmetic). Provide numbers, not strings.
+EOF
+}
 
 tool_list() {
   # Echo tool definition
   jq -cn '{
-    name: "echo",
-    title: "Echo Tool",
+    name: "test_echo",
+    title: "Test echo tool",
     description: "Echoes the input text.",
     inputSchema: {
       type: "object",
@@ -26,8 +33,8 @@ tool_list() {
 
   # Addition tool definition
   jq -cn '{
-    name: "add",
-    title: "Addition Tool",
+    name: "test_add",
+    title: "Test add tool",
     description: "Adds two numbers.",
     inputSchema: {
       type: "object",
@@ -40,8 +47,15 @@ tool_list() {
   }'
 }
 
+log() { echo >&2 -e "[tools/test.sh] $*"; }
+
 tool_echo() {
-  local json="$1"
+  local json="$1" text
+  text="$(jq -r '.text' <<< "$json")"
+  if [[ -z "$text" ]]; then
+    echo "Missing 'text' parameter"
+    return 1
+  fi
   jq -c '{
       content: [
         {
@@ -50,7 +64,7 @@ tool_echo() {
         }
       ],
       isError: false
-    }' <<< "$json"
+    }' <<< "$text"
 }
 
 tool_add() {
@@ -58,7 +72,7 @@ tool_add() {
   a="$(jq -r '.a' <<< "$json")"
   b="$(jq -r '.b' <<< "$json")"
   if [[ -z "$a" || -z "$b" ]]; then
-    jq -cn '{error:{message:"Missing parameters"}}'
+    echo "Missing 'a' and/or 'b' parameters"
     return 1
   fi
   sum=$((a + b))
@@ -76,17 +90,26 @@ tool_add() {
 main() {
   local cmd="${1-}"; shift || true
   case "$cmd" in
+    # List is required to declare available tools
     list)
       tool_list
       ;;
-    echo)
+
+    # And you must implement them, matching the declared names from the list
+    test_echo)
       tool_echo "${1-}" || return 1
       ;;
-    add)
+    test_add)
       tool_add "${1-}" || return 1
       ;;
+    
+    # Optional additional instructions (helps the LLM use the tools correctly)
+    instructions)
+      tool_instructions
+      ;;
+
     *)
-      jq -cn --arg cmd "$cmd" '{error:{message:"Unknown tool command", command:$cmd}}'
+      echo "Unknown tool command: $cmd"
       return 1
       ;;
   esac
