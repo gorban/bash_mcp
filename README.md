@@ -152,7 +152,7 @@ Operational logs and stderr copies are appended to `/tmp/mcp_server.log`. Tool s
 2. Implement a `list` subcommand that prints one JSON object per tool definition line.
 3. Implement a subcommand for each advertised `name`.
 4. Ensure each tool invocation prints valid JSON to stdout (tool result). Non-zero exit codes trigger server error wrapping.
-5. Avoid reusing existing tool names unless intentional (will block `tools/list`).
+5. Must use unique tool names across **all** /tools; duplicates will block `tools/list`.
 
 Template minimal tool:
 ```bash
