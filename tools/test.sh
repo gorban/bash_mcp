@@ -3,17 +3,24 @@
 set -Eeuom pipefail
 
 # Usage:
-#   ./test.sh list                      # prints tool definitions (one JSON object per line)
+#   ./test.sh list                    # prints tool definitions (one JSON object per line)
+#   ./test.sh instructions            # prints extra usage instructions for the parent MCP server
 #   ./test.sh echo '{"text":"hi"}'    # runs echo tool
 #   ./test.sh add '{"a":1,"b":2}'     # runs add tool
 
-log() { echo >&2 -e "[tools/test.sh] $*"; }
+tool_instructions() {
+  cat <<'EOF'
+Extra usage notes for test tools:
+- test_echo: returns the text verbatim.
+- test_add: integer addition only (bash arithmetic). Provide numbers, not strings.
+EOF
+}
 
 tool_list() {
   # Echo tool definition
   jq -cn '{
-    name: "echo",
-    title: "Echo Tool",
+    name: "test_echo",
+    title: "Test echo tool",
     description: "Echoes the input text.",
     inputSchema: {
       type: "object",
@@ -26,8 +33,8 @@ tool_list() {
 
   # Addition tool definition
   jq -cn '{
-    name: "add",
-    title: "Addition Tool",
+    name: "test_add",
+    title: "Test add tool",
     description: "Adds two numbers.",
     inputSchema: {
       type: "object",
@@ -40,53 +47,73 @@ tool_list() {
   }'
 }
 
-tool_echo() {
-  local json="$1"
-  jq -c '{
+log() { echo >&2 -e "[tools/test.sh] $*"; }
+
+text_response() {
+  local text="$1" is_error="${2-false}" # anything other than omitting or "false" is isError
+  jq -cn --arg isError "$is_error" \
+    --arg text "$text" '{
       content: [
         {
           type: "text",
-          text: .text
+          text: $text | tostring
         }
       ],
-      isError: false
-    }' <<< "$json"
+      isError: $isError | test("false") | not
+    }'
+}
+
+tool_echo() {
+  local json="$1"
+  local text
+  text="$(jq -r '.text' <<< "$json")"
+  if [[ -z "$text" ]]; then
+    echo "Missing 'text' parameter"
+    return 1
+  fi
+
+  text_response "$text"
 }
 
 tool_add() {
   local json="$1" a b sum
+  set +u
   a="$(jq -r '.a' <<< "$json")"
   b="$(jq -r '.b' <<< "$json")"
   if [[ -z "$a" || -z "$b" ]]; then
-    jq -cn '{error:{message:"Missing parameters"}}'
+    set -u
+    echo "Missing 'a' and/or 'b' parameters"
     return 1
   fi
+  set -u
+
   sum=$((a + b))
-  jq -cn --argjson sum "$sum" '{
-      content: [
-        {
-          type: "text",
-          text: $sum | tostring
-        }
-      ],
-      isError: false
-    }'
+  text_response "$sum"
 }
 
 main() {
   local cmd="${1-}"; shift || true
   case "$cmd" in
+    # List is required to declare available tools
     list)
       tool_list
       ;;
-    echo)
+
+    # And you must implement them, matching the declared names from the list
+    test_echo)
       tool_echo "${1-}" || return 1
       ;;
-    add)
+    test_add)
       tool_add "${1-}" || return 1
       ;;
+
+    # Optional additional instructions (helps the LLM use the tools correctly)
+    instructions)
+      tool_instructions
+      ;;
+
     *)
-      jq -cn --arg cmd "$cmd" '{error:{message:"Unknown tool command", command:$cmd}}'
+      echo "Unknown tool command: $cmd"
       return 1
       ;;
   esac
