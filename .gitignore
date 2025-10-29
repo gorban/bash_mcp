@@ -1,0 +1,91 @@
+# JetBrains IDEs (IntelliJ IDEA, Rider, PyCharm, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+*.ipr.bak
+*.ipr.old
+*.ipr.orig
+*.ipr.rej
+*.ipr.save
+*.ipr.swp
+*.ipr.tmp
+*.ipr.bak
+*.ipr.old
+*.ipr.orig
+*.ipr.rej
+*.ipr.save
+*.ipr.swp
+*.ipr.tmp
+*.ipr.bak
+*.ipr.old
+*.ipr.orig
+*.ipr.rej
+*.ipr.save
+*.ipr.swp
+*.ipr.tmp
+# Exclude module files for specific languages if needed
+# For example, for Python:
+# *.iml
+
+# VS Code
+.vscode/
+# Optionally, if you want to share some VS Code settings, uncomment specific lines
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.log
+*.obj
+*.pdb
+*.bak
+*.exe
+*.dll
+*.com
+*.lib
+*.ncb
+*.aps
+*.res
+*.pch
+*.ilk
+*.exp
+*.vshost.exe
+*.vshost.exe.config
+*.vshost.pdb
+*.vshost.log
+bin/
+obj/
+Debug/
+Release/
+# For .NET Core projects
+# nuget.g.props
+# nuget.g.targets
+# *.csproj.user
+# *.fsproj.user
+# *.vbproj.user
+
+# General ignores
+# Operating system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Build artifacts
+build/
+dist/
+target/
+out/
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Environment variables
+.env
+.env.*

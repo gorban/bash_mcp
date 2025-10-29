@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# Dynamic MCP server in bash with executable tool discovery (Bash 3.2 compatible).
+# Put executable tools in the 'tools' subdirectory. They do not need to be scripts;
+# they can be any executable (compiled binary, script with shebang, etc).
+# Each tool must support 'list' and any other tool name returned by 'list'.
+# Format must follow the MCP tool call "result" schema:
+# https://modelcontextprotocol.io/specification/2025-06-18/server/tools#output-schema
+#
+# For example, see tools/test.sh for a sample tool implementation.
+# ./tools/test.sh list
+# - Since this outputs `"name":"echo"` and `"name":"add"`, it must also support:
+# ./tools/test.sh echo '{"text":"hello"}'
+# ./tools/test.sh add '{"a":1,"b":2}'
+
+set -Eeuom pipefail
+
+LOG_FILE="/tmp/mcp_server.log"
+TOOLS_DIR="$(dirname "$0")/tools"
+JQ_LAST_ERROR=""
+
+# Mapping structures (avoid associative arrays for macOS default Bash 3.2)
+TOOL_NAME_LIST=()          # tool names in discovery order
+TOOL_FILE_MAPPING=()       # parallel array: either tool file path or __DUPLICATE__:file1,file2,...
+TOOL_AGGREGATED_JSON="[]"  # aggregated definitions (excluding duplicates)
+TOOL_DUPLICATES=()         # entries formatted name:fileNew,fileExisting
+TOOL_LIST_ERRORS=()        # listing errors per tool file
+
+# Globals populated by parse_capture
+PARSE_EXIT_CODE=""
+PARSE_STDOUT=""
+PARSE_STDERR=""
+PARSE_COMBINED=""
+
+server_config_json() {
+  jq -cn '{
+    protocolVersion: "2025-06-18",
+    serverInfo: {
+      name: "Team MCP Server", version: "0.0.1"
+    },
+    capabilities: {
+      tools: {
+        listChanged: true
+      }
+    },
+    instructions: "This server provides our team'"'"'s custom tools."
+  }'
+}
+
+msg() {
+  echo >&2 -e "${1-}"
+}
+
+log() {
+  local level="$1" m="$2"
+  local ts
+
+  set +e
+  ts="$(date "+%Y-%m-%d %H:%M:%S")"
+  set -e
+
+  msg "[$ts] [$level] $m" 2>> "$LOG_FILE"
+}
+
+create_error_response() {
+  local id="$1" code="$2" message="$3"
+  log 2 "Error response id=$id code=$code msg=$message"
+  jq -Mcn --arg id "$id" \
+    --argjson code "$code" \
+    --arg message "$message" '{
+      jsonrpc: "2.0",
+      error: {
+        code: $code,
+        message: $message
+      },
+      id: $id | tonumber
+    }'
+}
+
+create_response() {
+  local id="$1" result="$2"
+  jq -Mcn --arg id "$id" \
+    --argjson result "$result" '{
+      jsonrpc: "2.0",
+      result: $result,
+      id: $id | tonumber
+    }'
+}
+
+# Helper: run jq on provided data; capture stderr on failure.
+# Usage: if ! jq_eval OUT_VAR "$data" -r 'filter'; then ... (error in $JQ_LAST_ERROR)
+jq_eval() {
+  local __out_var="$1"
+  local __data="$2"
+
+  shift 2
+  local err_file out rc
+  err_file="$(mktemp)"
+
+  # Preserve pipe fail; explicit capture
+  set +e
+  out="$(jq -M "$@" <<< "$__data" 2> "$err_file")"
+  rc=$?
+  set -e
+
+  if [[ $rc -ne 0 ]]; then
+    # Keep full jq stderr (trim trailing newline)
+    JQ_LAST_ERROR="$(tr -d '\r' < "$err_file" | sed 's/[[:space:]]*$//')"
+    rm -f "$err_file"
+    return $rc
+  fi
+
+  rm -f "$err_file"
+  JQ_LAST_ERROR=""
+  printf -v "$__out_var" '%s' "$out"
+}
+
+# Add a noop function to reference globals (helps some static analyzers recognize usage)
+_touch_globals() {
+  : "${TOOLS_DIR-}" "${TOOL_NAME_LIST[*]-}" "${TOOL_FILE_MAPPING[*]-}" "${TOOL_AGGREGATED_JSON-}" "${TOOL_DUPLICATES[*]-}" "${TOOL_LIST_ERRORS[*]-}"
+}
+
+# Add tool definition to mapping (handles duplicates)
+add_tool_mapping() {
+  local name="$1" file="$2" def_json="$3"
+  local i
+  for i in "${!TOOL_NAME_LIST[@]}"; do
+    if [[ "${TOOL_NAME_LIST[$i]}" == "$name" ]]; then
+      # Duplicate
+      local existing="${TOOL_FILE_MAPPING[$i]}"
+      if [[ "$existing" == __DUPLICATE__:* ]]; then
+        # Append new file to duplicate list
+        TOOL_FILE_MAPPING[$i]="$existing,$file"
+      else
+        # Convert to duplicate marker
+        TOOL_FILE_MAPPING[$i]="__DUPLICATE__:${existing},${file}"
+      fi
+      TOOL_DUPLICATES+=("$name:$file,${existing#__DUPLICATE__:}")
+      return
+    fi
+  done
+  TOOL_NAME_LIST+=("$name")
+  TOOL_FILE_MAPPING+=("$file")
+  TOOL_AGGREGATED_JSON="$(jq -Mcn --argjson arr "$TOOL_AGGREGATED_JSON" --argjson obj "$def_json" '$arr + [$obj]')"
+}
+
+# Lookup tool file; stdout: file path or duplicate marker; return 0 if found else 1
+lookup_tool_file() {
+  local name="$1" i
+  for i in "${!TOOL_NAME_LIST[@]}"; do
+    if [[ "${TOOL_NAME_LIST[$i]}" == "$name" ]]; then
+      printf '%s' "${TOOL_FILE_MAPPING[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_and_capture() {
+  local exec_path="$1" subcmd="$2" arg_json="${3-}"
+  local tmp_stdout tmp_stderr tmp_combined
+  tmp_stdout="$(mktemp)"
+  tmp_stderr="$(mktemp)"
+  tmp_combined="$(mktemp)"
+
+  set +e
+  if [[ -n "$arg_json" ]]; then
+    "$exec_path" "$subcmd" "$arg_json" \
+      > >(tee "$tmp_stdout" >> "$tmp_combined") \
+      2> >(tee "$tmp_stderr" >> "$tmp_combined")
+  else
+    "$exec_path" "$subcmd" \
+      > >(tee "$tmp_stdout" >> "$tmp_combined") \
+      2> >(tee "$tmp_stderr" >> "$tmp_combined")
+  fi
+  local exit_code=$?
+  set -e
+
+  jq -Mcn --arg exit_code "$exit_code" \
+    --arg stdout "$(cat "$tmp_stdout")" \
+    --arg stderr "$(cat "$tmp_stderr")" \
+    --arg combined "$(cat "$tmp_combined")" '{
+        exit_code: $exit_code,
+        stdout: $stdout,
+        stderr: $stderr,
+        combined: $combined
+      }'
+  rm -f "$tmp_stdout" "$tmp_stderr" "$tmp_combined"
+}
+
+# Parse run_and_capture JSON once; set decoded globals.
+# Return codes:
+#  0 = success
+#  2 = jq parse failure
+parse_capture() {
+  local json="$1"
+  local assigns
+
+  # Reset globals
+  PARSE_EXIT_CODE=""
+  PARSE_STDOUT=""
+  PARSE_STDERR=""
+  PARSE_COMBINED=""
+
+  # Use jq @sh to emit shell-safe assignments (handles spaces/newlines without base64)
+  if ! jq_eval assigns "$json" -Mr '
+    def emit(n; v): n + "=" + ((v // "") | @sh);
+    emit("PARSE_EXIT_CODE"; .exit_code),
+    emit("PARSE_STDOUT"; .stdout),
+    emit("PARSE_STDERR"; .stderr),
+    emit("PARSE_COMBINED"; .combined)
+    '; then
+    log 2 "jq parse_capture error: $JQ_LAST_ERROR raw=$json"
+    return 2
+  fi
+
+  # Evaluate assignments safely (produced by jq @sh) to populate globals
+  eval "$assigns" || { log 2 "eval failed for parse_capture assigns=$assigns"; return 2; }
+}
+
+cache_tool_files() {
+  TOOL_AGGREGATED_JSON="[]"
+  TOOL_DUPLICATES=()
+  TOOL_LIST_ERRORS=()
+  TOOL_NAME_LIST=()
+  TOOL_FILE_MAPPING=()
+  local file_count=0
+
+  if [[ -d "$TOOLS_DIR" ]]; then
+    while IFS= read -r f; do
+      [[ -x "$f" ]] || continue
+      ((file_count++))
+
+      local res
+      res="$(run_and_capture "$f" list)"
+      if ! parse_capture "$res"; then
+        TOOL_LIST_ERRORS+=("$f: parse error")
+        log 2 "Parse error listing $f raw=$res"
+        continue
+      fi
+      if [[ "$PARSE_EXIT_CODE" != "0" ]]; then
+        TOOL_LIST_ERRORS+=("$f: $PARSE_COMBINED")
+        log 2 "List failure $f exit_code=$PARSE_EXIT_CODE combined=$PARSE_COMBINED"
+        continue
+      fi
+
+      # Slurp all JSON tool definitions the tool emitted on stdout.
+      # Each complete JSON object (even multi-line) becomes an element of the array.
+      local defs_array
+      if ! jq_eval defs_array "$PARSE_STDOUT" -Mcs '.'; then
+        TOOL_LIST_ERRORS+=("$f: invalid JSON (slurp failed): $JQ_LAST_ERROR")
+        log 2 "Slurp error file=$f jq_error=$JQ_LAST_ERROR stdout=$PARSE_STDOUT"
+        continue
+      fi
+
+      # Iterate each definition object
+      # Use @json to force a compact single-line representation for stable storage.
+      while IFS= read -r def_json; do
+        [[ -z "$def_json" ]] && continue
+        if ! jq -Me . >/dev/null 2> >(read -r err; JQ_LAST_ERROR="$err") <<< "$def_json"; then
+          TOOL_LIST_ERRORS+=("$f: invalid JSON definition: $JQ_LAST_ERROR")
+          log 2 "Definition JSON error file=$f jq_error=$JQ_LAST_ERROR def=$def_json"
+          continue
+        fi
+
+        local tool_name
+        if ! jq_eval tool_name "$def_json" -Mr '.name // empty'; then
+          TOOL_LIST_ERRORS+=("$f: cannot extract name: $JQ_LAST_ERROR")
+          log 2 "Name extraction error file=$f jq_error=$JQ_LAST_ERROR def=$def_json"
+          continue
+        fi
+        if [[ -z "$tool_name" ]]; then
+          TOOL_LIST_ERRORS+=("$f: missing name in definition")
+          log 2 "Missing name $f def=$def_json"
+          continue
+        fi
+
+        add_tool_mapping "$tool_name" "$f" "$def_json"
+      done < <(jq -c '.[]' <<< "$defs_array")
+
+      [[ -n "$PARSE_STDERR" ]] && log 1 "List stderr $f: $PARSE_STDERR"
+    done < <(find "$TOOLS_DIR" -maxdepth 1 -type f 2>/dev/null)
+  fi
+  log 1 "Cache complete files=$file_count tools=${#TOOL_NAME_LIST[@]} duplicates=${#TOOL_DUPLICATES[@]} errors=${#TOOL_LIST_ERRORS[@]}"
+}
+
+handle_tools_list() {
+  local id="$1"
+  if (( ${#TOOL_LIST_ERRORS[@]} > 0 )); then
+    create_error_response "$id" -32603 "Tool listing failed: ${TOOL_LIST_ERRORS[*]}"
+    return
+  fi
+  if (( ${#TOOL_DUPLICATES[@]} > 0 )); then
+    create_error_response "$id" -32603 "Duplicate tool names: ${TOOL_DUPLICATES[*]}"
+    return
+  fi
+  create_response "$id" "$(jq -Mcn --argjson tools "$TOOL_AGGREGATED_JSON" '{ tools: $tools }')"
+}
+
+handle_tools_call() {
+  local id="$1" params="$2"
+  local parsed tool_name tool_params mapping
+
+  if ! jq_eval parsed "$params" -Mr '.name, .arguments // {}'; then
+    log 2 "jq params parse error id=$id error=$JQ_LAST_ERROR params=$params"
+    create_error_response "$id" -32602 "Invalid params: $JQ_LAST_ERROR"
+    return
+  fi
+
+  read -rd '' tool_name tool_params <<< "$parsed" || true
+  if ! mapping="$(lookup_tool_file "$tool_name")"; then
+    create_error_response "$id" -32601 "Tool not found"
+    return
+  fi
+  if [[ "$mapping" == __DUPLICATE__:* ]]; then
+    create_error_response "$id" -32603 "Tool name '$tool_name' duplicated (${TOOL_DUPLICATES[*]})"
+    return
+  fi
+
+  local call_res
+  call_res="$(run_and_capture "$mapping" "$tool_name" "$tool_params")"
+  if ! parse_capture "$call_res"; then
+    create_error_response "$id" -32603 "Tool '$tool_name' output parse error"
+    return
+  fi
+  if [[ "$PARSE_EXIT_CODE" != "0" ]]; then
+    log 2 "Tool '$tool_name' failed exit_code=$PARSE_EXIT_CODE combined=$PARSE_COMBINED"
+    create_error_response "$id" -32603 "Tool '$tool_name' failed (exit $PARSE_EXIT_CODE): $PARSE_COMBINED"
+    return
+  fi
+  if ! jq -Me . >/dev/null 2> >(read -r err; JQ_LAST_ERROR="$err") <<< "$PARSE_STDOUT"; then
+    log 2 "Tool JSON output invalid name=$tool_name error=$JQ_LAST_ERROR stdout=$PARSE_STDOUT"
+    create_error_response "$id" -32603 "Tool '$tool_name' returned invalid JSON: $JQ_LAST_ERROR"
+    return
+  fi
+  [[ -n "$PARSE_STDERR" ]] && log 1 "stderr $tool_name: $PARSE_STDERR"
+  create_response "$id" "$PARSE_STDOUT"
+}
+
+main() {
+  local parsed jsonrpc id method params
+  log 1 "Starting MCP server (Bash version: ${BASH_VERSION})"
+  cache_tool_files
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+
+    if ! jq_eval parsed "$line" -Mr '.jsonrpc, .id, .method, .params'; then
+      log 2 "Incoming parse error jq_error=$JQ_LAST_ERROR line=$line"
+      create_error_response "" -32700 "Parse error: $JQ_LAST_ERROR"
+      continue
+    fi
+    log 1 "Received request: $line"
+
+    read -rd '' jsonrpc id method params <<< "$parsed" || true
+    [[ "$jsonrpc" != "2.0" ]] && { create_error_response "$id" -32600 "Invalid Request jsonrpc"; continue; }
+    [[ -z "$id" ]] && { create_error_response "" -32600 "Missing id"; continue; }
+    [[ -z "$method" ]] && { create_error_response "$id" -32600 "Missing method"; continue; }
+
+    case "$method" in
+      notifications/initialized) log 1 "Host confirmed toolContract reception with 'notifications/initialized'." ;;
+      initialize) create_response "$id" "$(server_config_json)" ;;
+      tools/list) handle_tools_list "$id" ;;
+      tools/call) handle_tools_call "$id" "$params" ;;
+      resources/list) create_response "$id" "$(jq -Mcn '{resources: []}')" ;;
+      resources/templates/list) create_response "$id" "$(jq -Mcn '{resourceTemplates: []}')" ;;
+      prompts/list) create_response "$id" "$(jq -Mcn '{prompts: []}')" ;;
+      *) create_error_response "$id" -32601 "Method not found" ;;
+    esac
+  done
+}
+
+# Call once at startup before cache
+_touch_globals
+
+main "$@" | tee -a "$LOG_FILE"
