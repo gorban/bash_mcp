@@ -50,7 +50,7 @@ server_config_json() {
   if [[ -n "$joined" ]]; then
     final+="${nl}${joined}"
   fi
-  jq -cn --arg instructions "$final" '{
+  jq -Mcn --arg instructions "$final" '{
     protocolVersion: "2025-06-18",
     serverInfo: {
       name: "Team MCP Server", version: "0.0.2"
@@ -116,7 +116,7 @@ jq_eval() {
 
   # Preserve pipe fail; explicit capture
   set +e
-  out="$(jq -M "$@" <<< "$__data" 2> "$err_file")"
+  out="$(jq -Mc "$@" <<< "$__data" 2> "$err_file")"
   rc=$?
   set -e
 
@@ -175,34 +175,105 @@ lookup_tool_file() {
 
 run_and_capture() {
   local exec_path="$1" subcmd="$2" arg_json="${3-}"
-  local tmp_stdout tmp_stderr tmp_combined
+  local tmp_stdout tmp_stderr tmp_combined pipe_stdout pipe_stderr
   tmp_stdout="$(mktemp)"
   tmp_stderr="$(mktemp)"
   tmp_combined="$(mktemp)"
+  pipe_stdout="$(mktemp -u)"
+  pipe_stderr="$(mktemp -u)"
+
+  mkfifo "$pipe_stdout" "$pipe_stderr"
+
+  # Ensure temporary files are removed if the function exits early
+  local cleanup_files=("$tmp_stdout" "$tmp_stderr" "$tmp_combined" "$pipe_stdout" "$pipe_stderr")
+
+  trap 'rm -f "${cleanup_files[@]}"; trap - RETURN' RETURN
+
+  local stdout_content stderr_content combined_content
+
+  log 1 "Running command (background): $exec_path $subcmd ...params..."
+
+  # Start tee processes that preserve ordering via tmp_combined
+  tee "$tmp_stdout" >> "$tmp_combined" < "$pipe_stdout" &
+  local tee_stdout_pid=$!
+  tee "$tmp_stderr" >> "$tmp_combined" < "$pipe_stderr" &
+  local tee_stderr_pid=$!
+
+  # Run the command in background and capture its PID
+  exec 3>"$pipe_stdout"
+  exec 4>"$pipe_stderr"
 
   set +e
-  if [[ -n "$arg_json" ]]; then
-    "$exec_path" "$subcmd" "$arg_json" \
-      > >(tee "$tmp_stdout" >> "$tmp_combined") \
-      2> >(tee "$tmp_stderr" >> "$tmp_combined")
-  else
-    "$exec_path" "$subcmd" \
-      > >(tee "$tmp_stdout" >> "$tmp_combined") \
-      2> >(tee "$tmp_stderr" >> "$tmp_combined")
-  fi
-  local exit_code=$?
+  "$exec_path" "$subcmd" "$arg_json" >&3 2>&4 &
+  local cmd_pid=$!
   set -e
 
-  jq -Mcn --arg exit_code "$exit_code" \
-    --arg stdout "$(cat "$tmp_stdout")" \
-    --arg stderr "$(cat "$tmp_stderr")" \
-    --arg combined "$(cat "$tmp_combined")" '{
+  # Close parent copies of the write ends to avoid keeping FIFOs open
+  exec 3>&-
+  exec 4>&-
+
+  local exit_code="" event="" cmd_done=0 stdout_done=0
+  while [[ -z "$event" ]]; do
+    if [[ $cmd_done -eq 0 ]] && ! kill -0 "$cmd_pid" 2>/dev/null; then
+      set +e
+      wait "$cmd_pid" 2>/dev/null
+      exit_code=$?
+      set -e
+      cmd_done=1
+      event="cmd"
+      continue
+    fi
+
+    if [[ $stdout_done -eq 0 ]] && ! kill -0 "$tee_stdout_pid" 2>/dev/null; then
+      stdout_done=1
+      event="stdout"
+      [[ -n "$exit_code" ]] || exit_code="0"
+      continue
+    fi
+
+    sleep 0.05
+  done
+
+  log 1 "Capture completed via ${event}, awaiting tee processes for final flush"
+
+  if [[ "$event" == "cmd" ]]; then
+    # Give the tees a moment to drain any buffered output, then terminate them so
+    # we do not hang when the tool leaves background children holding the pipe open.
+    sleep 0.05
+    kill "$tee_stdout_pid" "$tee_stderr_pid" 2>/dev/null || true
+  fi
+
+  set +e
+  local pid
+  for pid in "$tee_stdout_pid" "$tee_stderr_pid"; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  set -e
+
+  # Read the captured content
+  stdout_content="$(cat "$tmp_stdout")"
+  stderr_content="$(cat "$tmp_stderr")"
+  combined_content="$(cat "$tmp_combined")"
+
+  log 1 "Command monitoring finished (event=${event}) with exit code $exit_code"
+
+  local result
+  result="$(jq -Mcn --arg exit_code "$exit_code" \
+    --arg stdout "$stdout_content" \
+    --arg stderr "$stderr_content" \
+    --arg combined "$combined_content" '{
         exit_code: $exit_code,
         stdout: $stdout,
         stderr: $stderr,
         combined: $combined
-      }'
-  rm -f "$tmp_stdout" "$tmp_stderr" "$tmp_combined"
+      }')"
+
+  trap - RETURN
+  rm -f "${cleanup_files[@]}"
+
+  echo "$result"
 }
 
 # Parse run_and_capture JSON once; set decoded globals.
@@ -295,7 +366,7 @@ cache_tool_files() {
         fi
 
         add_tool_mapping "$tool_name" "$f" "$def_json"
-      done < <(jq -c '.[]' <<< "$defs_array")
+      done < <(jq -Mc '.[]' <<< "$defs_array")
 
       [[ -n "$PARSE_STDERR" ]] && log 1 "List stderr $f: $PARSE_STDERR"
 
@@ -413,9 +484,9 @@ main() {
       initialize) create_response "$id" "$(server_config_json)" ;;
       tools/list) handle_tools_list "$id" ;;
       tools/call) handle_tools_call "$id" "$params" ;;
-      resources/list) create_response "$id" "$(jq -Mcn '{resources: []}')" ;;
-      resources/templates/list) create_response "$id" "$(jq -Mcn '{resourceTemplates: []}')" ;;
-      prompts/list) create_response "$id" "$(jq -Mcn '{prompts: []}')" ;;
+      resources/list) create_response "$id" "$(jq -Mcn '{ resources: [] }')" ;;
+      resources/templates/list) create_response "$id" "$(jq -Mcn '{ resourceTemplates: [] }')" ;;
+      prompts/list) create_response "$id" "$(jq -Mcn '{ prompts: [] }')" ;;
       *) create_error_response "$id" -32601 "Method not found" ;;
     esac
   done
