@@ -26,12 +26,6 @@ TOOL_AGGREGATED_JSON="[]"  # aggregated definitions (excluding duplicates)
 TOOL_DUPLICATES=()         # entries formatted name:fileNew,fileExisting
 TOOL_LIST_ERRORS=()        # listing errors per tool file
 
-# Globals populated by parse_capture
-PARSE_EXIT_CODE=""
-PARSE_STDOUT=""
-PARSE_STDERR=""
-PARSE_COMBINED=""
-
 server_config_json() {
   # Base instructions plus any extra tool-provided instructions (plain text).
   local base="This server provides our team's custom tools." joined="" nl=$'\n\n'
