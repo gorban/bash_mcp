@@ -225,7 +225,7 @@ parse_capture() {
     def emit(n; v): n + "=" + ((v // "") | @sh);
     emit("PARSE_EXIT_CODE"; .exit_code),
     emit("PARSE_STDOUT"; .stdout),
-    emit("PARSE_STDOUT_VALID"; (try (.stdout | fromjson | true) catch false)),
+    emit("PARSE_STDOUT_VALID"; (try (.stdout | fromjson | has("content")) catch false)),
     emit("PARSE_STDERR"; .stderr),
     emit("PARSE_COMBINED"; .combined)
     '; then
