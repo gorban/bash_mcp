@@ -216,6 +216,7 @@ parse_capture() {
   # Reset globals
   PARSE_EXIT_CODE=""
   PARSE_STDOUT=""
+  PARSE_STDOUT_VALID=""
   PARSE_STDERR=""
   PARSE_COMBINED=""
 
@@ -224,6 +225,7 @@ parse_capture() {
     def emit(n; v): n + "=" + ((v // "") | @sh);
     emit("PARSE_EXIT_CODE"; .exit_code),
     emit("PARSE_STDOUT"; .stdout),
+    emit("PARSE_STDOUT_VALID"; (try (.stdout | fromjson | true) catch false)),
     emit("PARSE_STDERR"; .stderr),
     emit("PARSE_COMBINED"; .combined)
     '; then
@@ -378,6 +380,12 @@ handle_tools_call() {
     return
   fi
   [[ -n "$PARSE_STDERR" ]] && log 1 "stderr $tool_name: $PARSE_STDERR"
+  if [[ "$PARSE_STDOUT_VALID" != "true" ]]; then
+    log 2 "Tool '$tool_name' returned invalid JSON stdout=$PARSE_STDOUT"
+    local nl=$'\n'
+    create_error_response "$id" -32603 "Tool '$tool_name' returned invalid JSON:${nl}${PARSE_STDOUT}"
+    return
+  fi
   create_response "$id" "$PARSE_STDOUT"
 }
 
