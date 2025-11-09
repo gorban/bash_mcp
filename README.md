@@ -4,8 +4,26 @@ A minimal, dynamic [Model Context Protocol](https://modelcontextprotocol.io/) (M
 
 ---
 ## Prerequisites
-- Bash shell (tested with macOS default Bash 3.2; should work on Linux)
-- `jq` command-line JSON processor (install via `brew install jq` on macOS or your package manager on Linux)
+- Bash shell\
+  Tested with:
+  - macOS default Bash 3.2
+  - Git Bash on Windows
+    - If you don't have already have `"C:\Program Files\Git\bin\bash.exe"`,\
+      install Git for Windows from:\
+      <https://git-scm.com/install/windows>
+  - should work on Linux
+- `jq` command-line JSON processor:
+  - Linux/macOS:
+    - Fill in your \<\<package_manager>> and run:\
+      `<<package_manager>> install jq`\
+      e.g. for macOS: `brew install jq`
+  - Windows:
+    1. Go to `jq` GitHub releases page:\
+       <https://github.com/jqlang/jq/releases>
+    2. Under Assets, download `jq-win64.exe`\
+       **Note:** if you don't see it, click "Show all ## assets" to expand the full list first.
+    3. Rename the file to just `jq.exe` and place it at exactly:\
+       `C:\Program Files\Git\usr\bin\jq.exe`
 
 ---
 ## Key Features
@@ -29,6 +47,20 @@ Modify your MCP JSON.
    1. Open command palette, search for "MCP: Add Server...".
    2. Select "Command (stdio)".
    3. Select the full path to bash_mcp.sh.
+3. For Visual Studio:
+   1. Click to open top menu "View" dropdown, and click "GitHub Copilot Chat".
+   2. In the "GitHub Copilot Chat" pane, in the bottom prompt box, click the wrenches icon.
+   3. In the "Select tools" modal popup, in the top-right, click the "+" button.
+   4. In the "Configure MCP server" window, fill in:
+      1. Destination: ensure `Global ...` is selected (default)
+      2. Server ID: enter `team`
+      3. Type: ensure `stdio` is selected (default)
+      4. Command (with optional arguments): enter
+         ```sh
+         "C:\Program Files\Git\bin\bash.exe" "/full/path/to/bash_mcp.sh"
+         ```
+         **Example:** conversion of a Windows-style path `C:\Users\MyName\bash_mcp\bash_mcp.sh` to a MinGW directory-style: `/c/Users/MyName/bash_mcp/bash_mcp.sh`
+      5. Click `Save`.
 
 Ensure the `"servers"` JSON array contains an entry like:
 ```json
@@ -38,6 +70,15 @@ Ensure the `"servers"` JSON array contains an entry like:
   "args": []
 }
 ```
+- **Note:** except in Windows, where shebang .sh scripts need an explicit bash:
+  ```
+  ...
+  "command": "C:\\Program Files\\Git\\bin\\bash.exe",
+  "args": [
+    "/full/path/to/bash_mcp.sh"
+  ],
+  ...
+  ```
 
 Then, check from CoPilot chat, in Agent mode, that the settings gear icon shows the "team" server as connected with
 available tools.
