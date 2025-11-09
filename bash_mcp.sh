@@ -313,7 +313,10 @@ cache_tool_files() {
   if [[ -d "$TOOLS_DIR" ]]; then
     while IFS= read -r f; do
       [[ -x "$f" ]] || continue
+
+      set +e # Bash 3.2 on macOS doesn't give a non-zero exit for ++, but Git Bash on Windows does.
       ((file_count++))
+      set -e
 
       local res
       res="$(run_and_capture "$f" list)"
@@ -418,6 +421,7 @@ handle_tools_call() {
     return
   fi
 
+  parsed="$(tr -d '\r' <<< "$parsed")" # jq raw output of multiple fields on Windows has carriage returns
   read -rd '' tool_name tool_params <<< "$parsed" || true
   if ! mapping="$(lookup_tool_file "$tool_name")"; then
     create_error_response "$id" -32601 "Tool not found"
@@ -468,6 +472,7 @@ main() {
     fi
     log 1 "Received request: $line"
 
+    parsed="$(tr -d '\r' <<< "$parsed")" # jq raw output of multiple fields on Windows has carriage returns
     read -rd '' jsonrpc id method params <<< "$parsed" || true
     [[ "$jsonrpc" != "2.0" ]] && { create_error_response "$id" -32600 "Invalid Request jsonrpc"; continue; }
     [[ -z "$id" ]] && { create_error_response "" -32600 "Missing id"; continue; }
