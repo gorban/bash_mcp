@@ -110,7 +110,7 @@ jq_eval() {
 
   # Preserve pipe fail; explicit capture
   set +e
-  out="$(jq -Mc "$@" <<< "$__data" 2> "$err_file")"
+  out="$(jq -Mcb "$@" <<< "$__data" 2> "$err_file")"
   rc=$?
   set -e
 
@@ -421,7 +421,6 @@ handle_tools_call() {
     return
   fi
 
-  parsed="$(tr -d '\r' <<< "$parsed")" # jq raw output of multiple fields on Windows has carriage returns
   read -rd '' tool_name tool_params <<< "$parsed" || true
   if ! mapping="$(lookup_tool_file "$tool_name")"; then
     create_error_response "$id" -32601 "Tool not found"
@@ -472,7 +471,6 @@ main() {
     fi
     log 1 "Received request: $line"
 
-    parsed="$(tr -d '\r' <<< "$parsed")" # jq raw output of multiple fields on Windows has carriage returns
     read -rd '' jsonrpc id method params <<< "$parsed" || true
     [[ "$jsonrpc" != "2.0" ]] && { create_error_response "$id" -32600 "Invalid Request jsonrpc"; continue; }
     [[ -z "$id" ]] && { create_error_response "" -32600 "Missing id"; continue; }
