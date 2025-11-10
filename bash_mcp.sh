@@ -183,8 +183,6 @@ run_and_capture() {
 
   trap 'rm -f "${cleanup_files[@]}"; trap - RETURN' RETURN
 
-  local stdout_content stderr_content combined_content
-
   log 1 "Running command (background): $exec_path $subcmd ...params..."
 
   # Start tee processes that preserve ordering via tmp_combined
@@ -246,18 +244,13 @@ run_and_capture() {
   done
   set -e
 
-  # Read the captured content
-  stdout_content="$(cat "$tmp_stdout")"
-  stderr_content="$(cat "$tmp_stderr")"
-  combined_content="$(cat "$tmp_combined")"
-
   log 1 "Command monitoring finished (event=${event}) with exit code $exit_code"
 
   local result
   result="$(jq -Mcn --arg exit_code "$exit_code" \
-    --arg stdout "$stdout_content" \
-    --arg stderr "$stderr_content" \
-    --arg combined "$combined_content" '{
+    --rawfile stdout "$tmp_stdout" \
+    --rawfile stderr "$tmp_stderr" \
+    --rawfile combined "$tmp_combined" '{
         exit_code: $exit_code,
         stdout: $stdout,
         stderr: $stderr,
